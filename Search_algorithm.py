@@ -2,43 +2,36 @@ import numpy as np
 import heapq
 from collections import deque
 import time
-
+from functools import lru_cache
 # ========== 辅助函数：MST 下界（Prim算法） ==========
-def mst_lower_bound(unvisited_set, current_city, dist_matrix, coords=None):
-    """
-    计算从当前城市出发，经过所有未访问城市的MST下界。
-    参数：
-        unvisited_set: list 或 set 未访问的城市索引
-        current_city: 当前城市索引
-        dist_matrix: 距离矩阵
-    返回：MST总长度（下界）
-    """
-    if not unvisited_set:
-        return 0.0
-    nodes = [current_city] + list(unvisited_set)
-    n = len(nodes)
-    # 构建子图距离矩阵
-    sub_dist = np.zeros((n, n))
+def prim_mst(mask, current, dist_matrix):
+    n = dist_matrix.shape[0]
+    # 生成节点列表：当前节点 + 所有未访问节点
+    nodes = [current]
     for i in range(n):
-        for j in range(i+1, n):
-            d = dist_matrix[nodes[i]][nodes[j]]
-            sub_dist[i][j] = d
-            sub_dist[j][i] = d
-    # Prim算法求MST
-    visited = [False]*n
-    min_edge = [float('inf')]*n
-    min_edge[0] = 0
+        if not (mask & (1 << i)) and i != current:
+            nodes.append(i)
+    k = len(nodes)
+    if k <= 1:
+        return 0.0
+    # Prim算法，直接在原距离矩阵上查询，不构建子矩阵
+    visited = [False] * k
+    min_edge = [float('inf')] * k
+    min_edge[0] = 0.0
     total = 0.0
-    for _ in range(n):
+    for _ in range(k):
         u = -1
-        for i in range(n):
+        for i in range(k):
             if not visited[i] and (u == -1 or min_edge[i] < min_edge[u]):
                 u = i
         visited[u] = True
         total += min_edge[u]
-        for v in range(n):
-            if not visited[v] and sub_dist[u][v] < min_edge[v]:
-                min_edge[v] = sub_dist[u][v]
+        # 更新邻接边
+        for v in range(k):
+            if not visited[v]:
+                d = dist_matrix[nodes[u]][nodes[v]]
+                if d < min_edge[v]:
+                    min_edge[v] = d
     return total
 
 # ========== 状态表示 ==========
@@ -135,46 +128,51 @@ def a_star_tsp(dist_matrix):
     n = len(dist_matrix)
     start_mask = 1 << 0
     start = 0
-    # f = g + h
+    full_mask = (1 << n) - 1
+    
+    @lru_cache(maxsize=None)
     def heuristic(mask, curr):
-        unvisited = [i for i in range(n) if not (mask & (1<<i)) and i != curr]
-        if not unvisited:
-            return dist_matrix[curr][0]  # 回到起点的距离
-        # 包含当前节点和未访问节点的MST
-        nodes = [curr] + unvisited
-        # 快速计算MST
-        return mst_lower_bound(unvisited, curr, dist_matrix)
+        """可采纳启发式：当前节点+未访问节点的MST长度（不含返回起点）"""
+        if mask == full_mask:
+            return dist_matrix[curr][0]  # 直接返回起点的距离
+        # 计算MST（包括当前节点和所有未访问节点）
+        return prim_mst(mask, curr, dist_matrix)
     
-    g_score = {(start_mask, start): 0.0}
-    f_score = {(start_mask, start): heuristic(start_mask, start)}
-    pq = [(f_score[(start_mask, start)], start_mask, start, [start])]
+    # 编码状态：key = (mask << 5) | curr  (n<=32)
+    g = {}
+    f = {}
+    start_key = (start_mask << 5) | start
+    g[start_key] = 0.0
+    f[start_key] = heuristic(start_mask, start)
+    pq = [(f[start_key], start_mask, start, [start])]
+    
     nodes_expanded = 0
-    
     while pq:
-        f, mask, curr, path = heapq.heappop(pq)
-        if f != f_score.get((mask, curr), None):
+        f_val, mask, curr, path = heapq.heappop(pq)
+        key = (mask << 5) | curr
+        if f_val != f.get(key, None):
             continue
         nodes_expanded += 1
-        if mask == (1<<n) - 1:
-            total = g_score[(mask, curr)] + dist_matrix[curr][0]
+        if mask == full_mask:
+            total = g[key] + dist_matrix[curr][0]
             return path + [0], total, nodes_expanded
+        # 生成后继
         for nxt in range(n):
-            if mask & (1<<nxt):
+            if mask & (1 << nxt):
                 continue
-            new_mask = mask | (1<<nxt)
-            new_g = g_score[(mask, curr)] + dist_matrix[curr][nxt]
-            if (new_mask, nxt) not in g_score or new_g < g_score[(new_mask, nxt)]:
-                g_score[(new_mask, nxt)] = new_g
+            new_mask = mask | (1 << nxt)
+            new_g = g[key] + dist_matrix[curr][nxt]
+            new_key = (new_mask << 5) | nxt
+            if new_key not in g or new_g < g[new_key]:
+                g[new_key] = new_g
                 new_f = new_g + heuristic(new_mask, nxt)
-                f_score[(new_mask, nxt)] = new_f
+                f[new_key] = new_f
                 heapq.heappush(pq, (new_f, new_mask, nxt, path + [nxt]))
     return None, float('inf'), nodes_expanded
 
-# ========== 测试 ==========
 if __name__ == "__main__":
-    # 加载数据（使用你之前的函数）
-    from 数据处理 import load_single_tsp_instance_no_header  # 替换为你的实际导入
-    instance = load_single_tsp_instance_no_header(r"C:\Users\20682\Documents\数据集.xlsx")
+    from 数据处理 import load_single_tsp_instance_no_header 
+    instance = load_single_tsp_instance_no_header(r"C:\Users\20682\Documents\dataset.xlsx")
     dist_matrix = instance['dist_matrix']
     n = instance['num_cities']
     print(f"Testing with {n} cities")
